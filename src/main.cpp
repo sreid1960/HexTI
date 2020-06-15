@@ -70,6 +70,7 @@ static uint8_t hex_reset_bus(pab_t pab) {
     prn_reset();
     ser_reset();
     rtc_reset();
+    cfg_reset();
   }
   // release the bus ignoring any further action on bus. no response sent.
   hex_finish();
@@ -208,7 +209,7 @@ void loop(void) { // Arduino main loop routine.
   ser_init();
   rtc_init();
   prn_init();
-  cfg_init();
+  cfg_init(); // fetch our current settings from EEPROM if any (otherwise, the default RAM contents on reset apply)
   
   config = ee_get_config();
 

@@ -34,6 +34,35 @@
 
 extern config_t * config;
 
+#ifdef INCLUDE_CLOCK
+
+#include <DS3231.h>
+#include <SD.h>
+#include <Wire.h>
+
+extern DS3231 clock_peripheral;       // Our CLOCK : access via the HexBus at device code 230-239
+
+void dateTime(uint16_t* theDate, uint16_t* theTime)
+{
+  unsigned int year;
+  byte month,day,hour,minute,second;
+  bool cen,pm;
+
+  year = clock_peripheral.getYear() + 2000;
+  month = clock_peripheral.getMonth( cen );
+  day = clock_peripheral.getDate();
+  hour = clock_peripheral.getHour(cen,pm);
+  minute = clock_peripheral.getMinute();
+  second = clock_peripheral.getSecond();
+  
+  *theDate = FAT_DATE(year, month, day);
+  *theTime = FAT_TIME(hour, minute, second);
+
+  return;
+}
+
+#endif
+
 /*
    setup() - In Arduino, this will be run once automatically.
    Building non-Arduino, we'll call it once at the beginning
@@ -44,12 +73,12 @@ void setup(void) {
   hex_init();
   leds_init();
   timer_init();
-  //device_hw_address_init();
   drv_init();
   ser_init();
   rtc_init();
   prn_init();
   cfg_init();
+
   config = ee_get_config();
 
   sei();
@@ -63,5 +92,5 @@ void setup(void) {
 #endif
 
   wakeup_pin_init();
-
+  
 }

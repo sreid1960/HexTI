@@ -36,6 +36,11 @@
 #include <SD.h>
 
 const uint8_t  chipSelect = 10;
+
+#ifdef INCLUDE_CLOCK
+void dateTime(uint16_t* date, uint16_t* time);
+#endif
+
 #else
 FATFS fs;
 #include "diskio.h"
@@ -47,7 +52,7 @@ extern uint8_t buffer[BUFSIZE];
 // Global defines
 uint8_t open_files = 0;
 luntbl_t files[MAX_OPEN_FILES]; // file number to file mapping
-uint8_t fs_initialized = 0;
+uint8_t fs_initialized = FALSE;
 
 
 static file_t* find_file_in_use(uint8_t *lun) {
@@ -81,6 +86,7 @@ static file_t* reserve_lun(uint8_t lun) {
     if (!files[i].used) {
       files[i].used = TRUE;
       files[i].lun = lun;
+      files[i].file.attr = 0; // ensure clear attr before use
       open_files++;
       set_busy_led(TRUE);
       return &(files[i].file);
@@ -100,6 +106,9 @@ static void free_lun(uint8_t lun) {
       set_busy_led(open_files);
       if ( !open_files ) {
 #ifdef ARDUINO
+#ifdef INCLUDE_CLOCK
+        SdFile::dateTimeCallbackCancel();
+#endif
         SD.end();
         fs_initialized = FALSE;
 #endif
@@ -351,53 +360,99 @@ static uint8_t hex_drv_read(pab_t pab) {
   file = find_lun(pab.lun);
 
   if (file != NULL) {
+    if ( !(file->attr & FILEATTR_CATALOG ) ) {
+#ifdef ARDUINO
+      // amount remaining to read from file
+      fsize = (uint16_t)file->fp.size() - (uint16_t)file->fp.position(); // amount of data in file that can be sent.
+#else
+      fsize = file->fp.fsize;
+#endif
+      if ( fsize == 0 ) {
+        res = FR_EOF;
+      } else {
+        // size of buffer provided by host (amount to send)
+        len = pab.buflen;
+
+        if ( fsize > pab.buflen ) {
+          fsize = pab.buflen;
+        }
+      }
+    } else {
+
+      // Read next catalog entry.
 
 #ifdef ARDUINO
-    // amount remaining to read from file
-    fsize = (uint16_t)file->fp.size() - (uint16_t)file->fp.position(); // amount of data in file that can be sent.
-#else
-    fsize = file->fp.fsize;
-#endif
-    if ( fsize == 0 ) {
-      res = FR_EOF;
-    } else {
-      // size of buffer provided by host (amount to send)
-      len = pab.buflen;
+      {
+        File entry = file->fp.openNextFile();
+        uint32_t osize = 0;
+        uint8_t flag = 0;
 
-      if ( fsize < pab.buflen ) {
-        fsize = pab.buflen;
+        fsize = 0;
+        if ( !entry ) {
+          res = FR_EOF;
+        } else {
+          memset(buffer, 0, sizeof(buffer));
+          strcpy((char *)&buffer[0], entry.name() );
+          if ( entry.isDirectory() ) {
+            flag = F_ISDIRECTORY;
+          } else {
+            osize = entry.size();
+          }
+          entry.close();
+          // Do we have at least 12 bytes left in buffer?
+          if ( sizeof(buffer) - fsize > 12 ) {
+            strcat((char *)buffer, ",");
+            fsize = strlen((char *)buffer);
+            ltoa( osize, (char *)&buffer[fsize], 10);
+            strcat((char *)buffer, ",");
+            fsize = strlen((char *)buffer );
+            itoa( flag, (char *)&buffer[fsize], 10);
+            fsize = strlen((char *)buffer );
+          }
+        }
       }
+#else
+      // TODO: read next available directory entry using FatFS
+      res = FR_EOF;
+      fsize = 0;
+#endif
     }
+
     // send how much we are going to send
     rc = transmit_word( fsize );
 
     // while we have data remaining to send.
     while ( fsize && rc == HEXERR_SUCCESS ) {
 
-      len = fsize;    // remaing amount to read from file
+      len = fsize;    // remaining amount to read from file
       // while it fit into buffer or not?  Only read as much
       // as we can hold in our buffer.
       len = ( len > sizeof( buffer ) ) ? sizeof( buffer ) : len;
 
+      if ( !(file->attr & FILEATTR_CATALOG )) {
 #ifdef ARDUINO
-      memset((char *)buffer, 0, sizeof( buffer ));
-      read = file->fp.read( (char *)buffer, len );
-      if ( read ) {
-        res = FR_OK;
-      } else {
-        res = FR_RW_ERROR;
-      }
+        memset((char *)buffer, 0, sizeof( buffer ));
+        read = file->fp.read( (char *)buffer, len );
+        if ( read ) {
+          res = FR_OK;
+        } else {
+          res = FR_RW_ERROR;
+        }
 #else
 
-      res = f_read(&(file->fp), buffer, len, &read);
+        res = f_read(&(file->fp), buffer, len, &read);
 
-      if (!res) {
-        uart_putc(13);
-        uart_putc(10);
-        uart_trace(buffer, 0, read);
-      }
+        if (!res) {
+          uart_putc(13);
+          uart_putc(10);
+          uart_trace(buffer, 0, read);
+        }
 
 #endif
+      } else {
+        // catalog entry, if that's what we're reading, is already in buffer.
+        read = fsize; // 0 if no entry, else size of entry in buffer.
+      }
 
       if (FR_OK == res) {
         for (i = 0; i < read; i++) {
@@ -455,7 +510,9 @@ static uint8_t hex_drv_open(pab_t pab) {
   uart_putc('>');
 
   len = 0;
-  memset(buffer,0,sizeof(buffer));
+
+  memset(buffer, 0, sizeof(buffer));
+
   if ( hex_get_data(buffer, pab.datalen) == HEXSTAT_SUCCESS ) {
     len = buffer[ 0 ] + ( buffer[ 1 ] << 8 );
     att = buffer[ 2 ];
@@ -467,15 +524,17 @@ static uint8_t hex_drv_open(pab_t pab) {
 #ifdef ARDUINO
 
   // for now, until we get rid of SD library in Arduino build.
-  switch (att & (0x80 | 0x40)) {
+  switch (att & OPENMODE_UPDATE) {
     case 0x00:  // append mode
       mode = FILE_WRITE;
       break;
+
     case OPENMODE_WRITE: // write, truncate if present. Maybe...
-      mode = FILE_WRITE;
+      mode = FILE_WRITE_NEW; // our own, does not include O_APPEND attribute.
       break;
+
     case OPENMODE_WRITE | OPENMODE_READ:
-      mode = FILE_WRITE | FILE_READ;
+      mode = FILE_WRITE; // In SD lib, FILE_WRITE includes the O_READ attribute.
       break;
     default: //OPENMODE_READ
       mode = FILE_READ;
@@ -484,7 +543,7 @@ static uint8_t hex_drv_open(pab_t pab) {
 
 #else
   // map attributes to FatFS file access mode
-  switch (att & (0x80 | 0x40)) {
+  switch (att & OPENMODE_UPDATE) {
     case 0x00:  // append mode
       mode = FA_WRITE;
       break;
@@ -510,41 +569,66 @@ static uint8_t hex_drv_open(pab_t pab) {
       file = reserve_lun(pab.lun);
     }
     if (file != NULL) {
-#ifdef ARDUINO
+
       if ( pab.datalen < BUFSIZE - 1 ) {
-        
-        if ( ( att & (OPENMODE_READ|OPENMODE_WRITE) ) == OPENMODE_WRITE ) {
+
+        if ( ( att & OPENMODE_READ ) == OPENMODE_READ ) {
+          if ( buffer[ pab.datalen - 1 ] == '$' ) {
+            // Are we attempting to open a catalog?
+            buffer[ pab.datalen - 1 ] = '/';
+            file->attr |= FILEATTR_CATALOG;
+          }
+        }
+
+#ifdef ARDUINO
+        /*
+          if ( ( att & (OPENMODE_READ | OPENMODE_WRITE) ) == OPENMODE_WRITE ) {
           // For now, open for write only, remove pre-existing file.
           if ( SD.exists( (const char *)&buffer[3] ) ) {
             SD.remove( (const char *)&buffer[3] );
           }
-        }
+          }
+        */
+        res = FR_OK; // presume success.
         // Now, open our file in proper mode. create it if we need to.
         file->fp = SD.open( (const char *)&buffer[3], mode );
-        if ( SD.exists( (const char *)&buffer[3] )) {
-          res = FR_OK;
-        } else {
-          res = FR_DENIED;
+
+        if ( !(file->attr & FILEATTR_CATALOG ) ) {
+
+          // Any mode other than create new file?
+          if ( mode != FILE_WRITE_NEW ) {
+            if ( !SD.exists( (const char *)&buffer[3] )) {
+              res = FR_DENIED;
+            }
+          }
+
+          if ( (att & OPENMODE_UPDATE) == OPENMODE_APPEND ) {
+            file->fp.seek( file->fp.size() ); // position for append.
+          }
         }
-      } else {
-        res = FR_INVALID_NAME;
-      }
 #else
-      if ( pab.datalen < BUFSIZE - 1 ) {
-        res = f_open(&fs, &(file->fp), (UCHAR *)&buffer[3], mode);
-      } else {
-        res = FR_INVALID_NAME;
-      }
+        // TODO: manage open of a directory if file->attr == FILEATTR_CATALOG
+        if ( pab.datalen < BUFSIZE - 1 ) {
+          res = f_open(&fs, &(file->fp), (UCHAR *)&buffer[3], mode);
+        }
 #endif
+
+        // common.
+      } else {
+        res = FR_INVALID_NAME; // if the incoming buffer is full, we can't stuff the null.
+      }
 
       switch (res) {
         case FR_OK:
           rc = HEXSTAT_SUCCESS;
+          fsize = 0;
+          if ( !(file->attr & FILEATTR_CATALOG) ) {
 #ifdef ARDUINO
-          fsize = file->fp.size();
+            fsize = file->fp.size();
 #else
-          fsize = file->fp.fsize;
+            fsize = file->fp.fsize;
 #endif
+          }
           break;
 
         case FR_IS_READONLY:
@@ -580,7 +664,7 @@ static uint8_t hex_drv_open(pab_t pab) {
 
   if (!hex_is_bav()) { // we can send response
     if ( rc == HEXERR_SUCCESS ) {
-      switch (att & (OPENMODE_WRITE | OPENMODE_READ)) {
+      switch (att & OPENMODE_UPDATE) {
 
         // when opening to write, or read/write
         default:
@@ -594,7 +678,7 @@ static uint8_t hex_drv_open(pab_t pab) {
           } else {
             // otherwise, we know. and do NOT allow fileattr display under any circumstance.
             fsize = len;
-            file->attr &= ~FILEATTR_DISPLAY; 
+            file->attr &= ~FILEATTR_DISPLAY;
           }
           break;
 
@@ -602,12 +686,10 @@ static uint8_t hex_drv_open(pab_t pab) {
         case OPENMODE_READ:
           // open read-only w LUN=0: just return size of file we're reading; always. this is for verify, etc.
           if (pab.lun != 0 ) {
-            if ( len ) {
-              if ( len <= sizeof( buffer ) ) {
-                fsize = len;
-              } else {
-                fsize = sizeof( buffer );
-              }
+            if (len) {
+              fsize = len; // non zero length requested, use it.
+            } else {
+              fsize = sizeof(buffer);  // on zero length request, return buffer size we use.
             }
           }
           // for len=0 OR lun=0, return fsize.
@@ -681,22 +763,59 @@ static uint8_t hex_drv_close(pab_t pab) {
   return HEXERR_BAV;
 }
 
+/*
+   hex_drv_restore() -
+   reset file to beginning
+   valid for update, input mode open files.
+*/
+static uint8_t hex_drv_restore( pab_t pab ) {
+  uint8_t  rc = HEXSTAT_SUCCESS;
+  file_t*  file = NULL;
+  BYTE     res = 0;
+
+  if ( open_files ) {
+    file = find_lun(pab.lun);
+    if ( file == NULL ) {
+      rc = HEXSTAT_DEVICE_ERR;
+    }
+  } else {
+    rc = HEXSTAT_NOT_OPEN;
+  }
+
+  if (!hex_is_bav() ) {
+    if ( rc == HEXSTAT_SUCCESS ) {
+#ifdef ARDUINO
+      // If we are restore on an open directory...rewind to start
+      if ( file->attr & FILEATTR_CATALOG ) {
+        file->fp.rewindDirectory();
+      } else {
+        // if we are a normal file, rewind to starting position.
+        file->fp.seek( 0 ); // restore back to start of file.
+      }
+#else
+      rc = HEXSTAT_UNSUPP_CMD;
+#endif
+    }
+    hex_send_final_response( rc );
+  }
+  hex_finish();
+  return HEXERR_BAV;
+}
 
 /*
    hex_drv_delete() -
    delete a file from the SD card.
 */
 static uint8_t hex_drv_delete(pab_t pab) {
-  uint8_t rc = HEXERR_SUCCESS;
+  uint8_t rc = HEXSTAT_SUCCESS;
 #ifndef ARDUINO
   FRESULT fr;
-#else
-  uint8_t sd_was_not_inited = 0;
 #endif
 
   uart_putc('>');
-  
-  memset(buffer,0,sizeof(buffer));
+
+  memset(buffer, 0, sizeof(buffer));
+
   if ( hex_get_data(buffer, pab.datalen) == HEXSTAT_SUCCESS ) {
   } else {
     hex_release_bus();
@@ -707,37 +826,37 @@ static uint8_t hex_drv_delete(pab_t pab) {
   // the file is open or not, and test for that; also should
   // test if it is really a file, or if it is a directory.
   // But for now; this'll do.
-#ifdef ARDUINO
-  if ( !fs_initialized ) { // TODO why is this done here, when it is done outside for all other functions?
-    if ( SD.begin(chipSelect) ) {
-      fs_initialized = 1;
-      sd_was_not_inited = 1;
-    } else {
-      rc = HEXSTAT_DEVICE_ERR;
-    }
-  }
-#endif
-  if ( rc == HEXERR_SUCCESS
+
+  if ( rc == HEXSTAT_SUCCESS
 #ifdef ARDUINO
        && fs_initialized
 #endif
      ) {
-     
     // If we did not fill buffer, we have a null at end due to memset before retrieval.
     if ( pab.datalen < BUFSIZE - 1 ) {
 #ifdef ARDUINO
       if ( SD.exists( (const char *)buffer )) {
         if ( SD.remove( (const char *)buffer )) {
           rc = HEXSTAT_SUCCESS;
+          if ( SD.exists((const char*)buffer )) {
+            rc = HEXSTAT_WP_ERR;
+          }
         } else {
-          rc = HEXSTAT_WP_ERR;
+          rc = HEXSTAT_DEVICE_ERR;
         }
       } else {
         rc = HEXSTAT_NOT_FOUND;
       }
-      if ( sd_was_not_inited ) {
+      // Now, if we have no open files, go ahead and shut down SD
+      // We shut down SD when nothing is open so we can detect a card change if there
+      // is no CD logic present.  Once we have known CD logic in place, we don't need
+      // to close SD down, unless we get a CD change (i.e.removal of card or insertion).
+      if ( !open_files ) {
+#ifdef INCLUDE_CLOCK
+        SdFile::dateTimeCallbackCancel();
+#endif
         SD.end();
-        fs_initialized = 0;
+        fs_initialized = FALSE;
       }
 #else
       // remove file
@@ -766,6 +885,55 @@ static uint8_t hex_drv_delete(pab_t pab) {
   return HEXERR_BAV;
 }
 
+/*
+    hex_drv_status() -
+    initial simplistic implementation
+*/
+static uint8_t hex_drv_status( pab_t pab ) {
+  uint8_t rc = HEXSTAT_SUCCESS;
+  uint8_t st = FILE_REQ_STATUS_NONE;
+  file_t* file = NULL;
+
+  if ( pab.lun == 0 ) {
+    st = open_files ? FILE_DEV_IS_OPEN : FILE_REQ_STATUS_NONE;
+    st |= FILE_IO_MODE_READWRITE;  // if SD is write-protected, then FILE_IO_MODE_READONLY should be here.
+  } else {
+    file = find_lun(pab.lun);
+    if ( file == NULL ) {
+      st = FILE_IO_MODE_READWRITE | FILE_DEV_TYPE_INTERNAL | FILE_SUPPORTS_RELATIVE;
+    } else {
+      // TODO: we need to cache the file's "open" mode (read-only, write-only, read/write/append and report that properly here.
+      //       ... relative or sequential access as well)
+      st = FILE_DEV_IS_OPEN | FILE_SUPPORTS_RELATIVE | FILE_IO_MODE_READWRITE;
+#ifdef ARDUINO
+      if ( !( file->attr & FILEATTR_CATALOG )) {
+        if ( file->fp.position() == file->fp.size() ) {
+          st |= FILE_EOF_REACHED;
+        }
+      }
+#else
+      // TODO: FatFS EOF check on file
+      // We also need to deal properly here and in SD with the CATALOG being open.
+#endif
+    }
+  }
+  if ( !hex_is_bav() ) {
+    if ( pab.buflen >= 1 )
+    {
+      transmit_word( 1 );
+      transmit_byte( st );
+      transmit_byte( HEXSTAT_SUCCESS );
+      hex_finish();
+      return HEXSTAT_SUCCESS;
+    } else {
+      hex_send_final_response( HEXSTAT_BUF_SIZE_ERR );
+      return HEXSTAT_SUCCESS;
+    }
+  }
+  hex_finish();
+  return HEXERR_BAV;
+}
+
 
 static uint8_t hex_drv_reset( __attribute__((unused)) pab_t pab) {
 
@@ -785,16 +953,29 @@ static uint8_t hex_drv_reset( __attribute__((unused)) pab_t pab) {
    make- ignore/ empty function.
 */
 void drv_start(void) {
+  
   if (!fs_initialized) {
+    
 #ifdef ARDUINO
     // If SD library not initialized, initialize it now
     // and mark it as such.
-    if (SD.begin( chipSelect ) ) {
-#else
-    if (f_mount(1, &fs) == FR_OK) {
+    if ( SD.begin( chipSelect ) ) {
+
+#ifdef INCLUDE_CLOCK
+      SdFile::dateTimeCallback(dateTime);
 #endif
-      fs_initialized = 1;
+      fs_initialized = TRUE;
     }
+
+#else
+
+    if (f_mount(1, &fs) == FR_OK) {
+
+      fs_initialized = TRUE;
+    }
+
+#endif
+
   }
   return;
 }
@@ -808,6 +989,8 @@ static const cmd_proc fn_table[] PROGMEM = {
   hex_drv_close,
   hex_drv_read,
   hex_drv_write,
+  hex_drv_restore,
+  hex_drv_status,
   hex_drv_delete,
   hex_drv_verify,
   hex_drv_reset,
@@ -820,6 +1003,8 @@ static const uint8_t op_table[] PROGMEM = {
   HEXCMD_CLOSE,
   HEXCMD_READ,
   HEXCMD_WRITE,
+  HEXCMD_RESTORE,
+  HEXCMD_RETURN_STATUS,
   HEXCMD_DELETE,
   HEXCMD_VERIFY,
   HEXCMD_RESET_BUS,
@@ -874,6 +1059,6 @@ void drv_init(void) {
     files[i].used = FALSE;
   }
   open_files = 0;
-  fs_initialized = 0;
+  fs_initialized = FALSE;
   return;
 }
