@@ -581,14 +581,14 @@ static uint8_t hex_drv_open(pab_t pab) {
         }
 
 #ifdef ARDUINO
-        /*
-          if ( ( att & (OPENMODE_READ | OPENMODE_WRITE) ) == OPENMODE_WRITE ) {
-          // For now, open for write only, remove pre-existing file.
+
+        if ( (att & OPENMODE_UPDATE) == OPENMODE_WRITE ) {
+          // Open for write only, remove pre-existing file!
           if ( SD.exists( (const char *)&buffer[3] ) ) {
             SD.remove( (const char *)&buffer[3] );
           }
-          }
-        */
+        }
+
         res = FR_OK; // presume success.
         // Now, open our file in proper mode. create it if we need to.
         file->fp = SD.open( (const char *)&buffer[3], mode );
@@ -604,6 +604,9 @@ static uint8_t hex_drv_open(pab_t pab) {
 
           if ( (att & OPENMODE_UPDATE) == OPENMODE_APPEND ) {
             file->fp.seek( file->fp.size() ); // position for append.
+          } else {
+            // If we are open for input, output, or update, position at start!
+            file->fp.seek( 0 );
           }
         }
 #else
@@ -953,9 +956,9 @@ static uint8_t hex_drv_reset( __attribute__((unused)) pab_t pab) {
    make- ignore/ empty function.
 */
 void drv_start(void) {
-  
+
   if (!fs_initialized) {
-    
+
 #ifdef ARDUINO
     // If SD library not initialized, initialize it now
     // and mark it as such.
