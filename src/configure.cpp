@@ -21,6 +21,8 @@
 
 
 #include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
 #include <avr/pgmspace.h>
 #include "config.h"
 #include "hexbus.h"
@@ -30,7 +32,7 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 #endif
-#include <string.h>
+
 
 // Global references
 extern uint8_t buffer[BUFSIZE];
