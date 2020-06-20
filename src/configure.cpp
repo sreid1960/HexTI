@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <avr/pgmspace.h>
 #include "config.h"
 #include "hexbus.h"
