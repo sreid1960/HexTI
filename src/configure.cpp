@@ -20,6 +20,7 @@
 */
 
 
+#include <ctype.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
@@ -151,7 +152,7 @@ static uint8_t hex_cfg_open( pab_t pab ) {
     rc = HEXSTAT_ALREADY_OPEN;
   } else {
     if ( att & OPENMODE_RELATIVE ) { // we have to be opened in RELATIVE mode.
-      if ( (att & (OPENMODE_READ | OPENMODE_WRITE)) != 0 ) { // append NOT allowed.
+      if ( (att & OPENMODE_MASK) != 0 ) { // append NOT allowed.
         if ( !( att & (OPENMODE_INTERNAL | OPENMODE_FIXED) ) ) { // internal and fixed are illegal.
           cfg_open = att; // we're open for use.
           if ( !len ) {
