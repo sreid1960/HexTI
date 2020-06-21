@@ -137,7 +137,6 @@ typedef enum _openmode_t {
 
 
 uint8_t hex_is_bav(void);
-//void hex_release_data( void );
 void hex_release_bus(void);
 uint8_t hex_capture_hsk( void );
 uint8_t receive_byte( uint8_t *inout);
