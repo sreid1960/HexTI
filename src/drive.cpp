@@ -18,13 +18,16 @@
     drive.cpp: Drive-based device functions.
 */
 #include <string.h>
+#include <avr/pgmspace.h>
+
 #include "config.h"
+
+#include "debug.h"
 #include "ff.h"
 #include "hexbus.h"
 #include "hexops.h"
 #include "led.h"
 #include "timer.h"
-#include "uart.h"
 
 #include "drive.h"
 
@@ -153,7 +156,7 @@ static uint8_t hex_drv_verify(pab_t pab) {
   BYTE     res = FR_OK;
   uint8_t  first_buffer = 1;
 
-  uart_putc('>');
+  debug_putc('>');
 
   file = find_lun(pab.lun);
   len = pab.datalen;   // this is the size of the object to verify
@@ -190,8 +193,8 @@ static uint8_t hex_drv_verify(pab_t pab) {
       res = f_read(&(file->fp), data, i, &read);
 
       if (res == FR_OK) {
-        uart_putcrlf();
-        uart_trace(buffer, 0, read);
+        debug_putcrlf();
+        debug_trace(buffer, 0, read);
       }
 
 #endif
@@ -224,7 +227,7 @@ static uint8_t hex_drv_verify(pab_t pab) {
     return HEXERR_BAV;
   } else {
 
-    uart_putc('>');
+    debug_putc('>');
 
     if (!hex_is_bav()) { // we can send response
       hex_send_final_response( res );
@@ -274,7 +277,7 @@ static uint8_t hex_drv_write(pab_t pab) {
   file_t* file = NULL;
   BYTE res = FR_OK;
 
-  uart_putc('>');
+  debug_puts_P(PSTR("\n\rWrite File\n\r"));
 
   file = find_lun(pab.lun);
   len = pab.datalen;
@@ -330,7 +333,7 @@ static uint8_t hex_drv_write(pab_t pab) {
     }
   }
 
-  uart_putc('>');
+  debug_putc('>');
 
   if (!hex_is_bav() ) { // we can send response
     hex_send_final_response( rc );
@@ -355,7 +358,7 @@ static uint8_t hex_drv_read(pab_t pab) {
   BYTE res = FR_OK;
   file_t* file;
 
-  uart_putc('<');
+  debug_puts_P(PSTR("\n\rRead File\n\r"));
 
   file = find_lun(pab.lun);
 
@@ -443,9 +446,9 @@ static uint8_t hex_drv_read(pab_t pab) {
         res = f_read(&(file->fp), buffer, len, &read);
 
         if (!res) {
-          uart_putc(13);
-          uart_putc(10);
-          uart_trace(buffer, 0, read);
+          debug_putc(13);
+          debug_putc(10);
+          debug_trace(buffer, 0, read);
         }
 
 #endif
@@ -479,7 +482,7 @@ static uint8_t hex_drv_read(pab_t pab) {
         break;
     }
 
-    uart_putc('>');
+    debug_putc('>');
 
   } else {
     transmit_word(0);      // null file
@@ -507,7 +510,7 @@ static uint8_t hex_drv_open(pab_t pab) {
   file_t* file = NULL;
   BYTE res = FR_OK;
 
-  uart_putc('>');
+  debug_puts_P(PSTR("\n\rOpen File\n\r"));
 
   len = 0;
 
@@ -602,7 +605,7 @@ static uint8_t hex_drv_open(pab_t pab) {
             }
           }
 
-          if ( (att & OPENMODE_MASK) == OPENMODE_APPEND ) {
+          if ( (att & OPENMODE_UPDATE) == OPENMODE_APPEND ) {
             file->fp.seek( file->fp.size() ); // position for append.
           } else {
             // If we are open for input, output, or update, position at start!
@@ -735,7 +738,7 @@ static uint8_t hex_drv_close(pab_t pab) {
   file_t* file = NULL;
   BYTE res = 0;
 
-  uart_putc('<');
+  debug_puts_P(PSTR("\n\rClose File\n\r"));
 
   file = find_lun(pab.lun);
   if (file != NULL) {
@@ -781,6 +784,7 @@ static uint8_t hex_drv_restore( pab_t pab ) {
   file_t*  file = NULL;
   BYTE     res = 0;
 
+  debug_puts_P(PSTR("\n\rDrive Restore\n\r"));
   if ( open_files ) {
     file = find_lun(pab.lun);
     if ( file == NULL ) {
@@ -820,7 +824,7 @@ static uint8_t hex_drv_delete(pab_t pab) {
   FRESULT fr;
 #endif
 
-  uart_putc('>');
+  debug_puts_P(PSTR("\n\rDelete File\n\r"));
 
   memset(buffer, 0, sizeof(buffer));
 
@@ -901,6 +905,7 @@ static uint8_t hex_drv_status( pab_t pab ) {
   uint8_t st = FILE_REQ_STATUS_NONE;
   file_t* file = NULL;
 
+  debug_puts_P(PSTR("\n\rDrive Status\n\r"));
   if ( pab.lun == 0 ) {
     st = open_files ? FILE_DEV_IS_OPEN : FILE_REQ_STATUS_NONE;
     st |= FILE_IO_MODE_READWRITE;  // if SD is write-protected, then FILE_IO_MODE_READONLY should be here.
@@ -976,7 +981,6 @@ void drv_start(void) {
 #else
 
     if (f_mount(1, &fs) == FR_OK) {
-
       fs_initialized = TRUE;
     }
 
@@ -1036,8 +1040,7 @@ void drv_reset( void )
   file_t* file = NULL;
   uint8_t lun;
 
-  uart_putcrlf();
-  uart_putc('R');
+  debug_puts_P(PSTR("\n\rReset\n\r"));
 
   if ( open_files ) {
     // find file(s) that are open, get file pointer and lun number
