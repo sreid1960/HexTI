@@ -595,22 +595,28 @@ static uint8_t hex_drv_open(pab_t pab) {
         res = FR_OK; // presume success.
         // Now, open our file in proper mode. create it if we need to.
         file->fp = SD.open( (const char *)&buffer[3], mode );
-
-        if ( !(file->attr & FILEATTR_CATALOG ) ) {
-
-          // Any mode other than create new file?
-          if ( mode != FILE_WRITE_NEW ) {
-            if ( !SD.exists( (const char *)&buffer[3] )) {
-              res = FR_DENIED;
+        // Given the internals, a void empty file object is created in event of
+        // an SD open error.  So; does the newly opened file object have a name associated 
+        // with it?
+        if ( strlen(file->fp.name()) ) {
+          if ( !(file->attr & FILEATTR_CATALOG ) ) {
+  
+            // Any mode other than create new file?
+            if ( mode != FILE_WRITE_NEW ) {
+              if ( !SD.exists( (const char *)&buffer[3] )) {
+                res = FR_DENIED;
+              }
+            }
+  
+            if ( (att & OPENMODE_UPDATE) == OPENMODE_APPEND ) {
+              file->fp.seek( file->fp.size() ); // position for append.
+            } else {
+              // If we are open for input, output, or update, position at start!
+              file->fp.seek( 0 );
             }
           }
-
-          if ( (att & OPENMODE_UPDATE) == OPENMODE_APPEND ) {
-            file->fp.seek( file->fp.size() ); // position for append.
-          } else {
-            // If we are open for input, output, or update, position at start!
-            file->fp.seek( 0 );
-          }
+        } else {
+          res = FR_RW_ERROR; // SD.open returned a void file object for some reason.
         }
 #else
         // TODO: manage open of a directory if file->attr == FILEATTR_CATALOG
