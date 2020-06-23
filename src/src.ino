@@ -73,10 +73,17 @@ void setup(void) {
   hex_init();
   leds_init();
   timer_init();
+  
+  // Registry is done in group order.  Registry #0 is for device code 0/all.
+  // Registry 1 is Drive
+  // Registry 2 is Serial
+  // Registry 3 is Printer
+  // Registry 4 is RTC clock
+  // Registry 5 is Configuration Device (for now)
   drv_init();
+  prn_init();
   ser_init();
   rtc_init();
-  prn_init();
   cfg_init();
 
   config = ee_get_config();

@@ -54,7 +54,7 @@ extern uint8_t device_address[MAX_REGISTRY];
 #define PRINTER_GROUP     1
 #define SERIAL_GROUP      2
 #define CLOCK_GROUP       3
-#define CONFIG_GROUP      7
+#define CONFIG_GROUP      4
 // Can have up to 'MAX_REGISTRY-1' of these (see registry.h)
 
 
@@ -64,6 +64,7 @@ extern uint8_t device_address[MAX_REGISTRY];
 
 #define DEFAULT_CFGDEV      (CFG_DEV)
 #define SUPPORT_CFG         (1<<CONFIG_GROUP)
+
 // Other support devices included optionally in build.
 #ifdef INCLUDE_PRINTER
  #define DEFAULT_PRINTER    (PRN_DEV+2)
@@ -88,6 +89,9 @@ extern uint8_t device_address[MAX_REGISTRY];
  #define DEFAULT_SERIAL    NO_DEV
  #define SUPPORT_SER       0
 #endif
+
+uint8_t cfg_low_address( uint8_t group );
+uint8_t cfg_high_address( uint8_t group );
 
 void cfg_start(void);
 void cfg_reset(void);
