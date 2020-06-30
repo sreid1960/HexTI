@@ -283,6 +283,34 @@ static uint8_t hex_drv_write(pab_t pab) {
   len = pab.datalen;
   res = (file != NULL ? FR_OK : FR_NO_FILE);
 
+#ifdef ARDUINO
+  // Handle relative file writes.
+  if ( file->attr & FILEATTR_RELATIVE ) {
+    // Use pab.record field and pab.bufsize to determine where to position for write;
+    // first, compute to see if desired record is beyond end of file. If so, we need to
+    // pad the file to that position, THEN write.
+    // if desired record is BEFORE our current position, set file position to that location.
+    { 
+      long pos = pab.record * pab.buflen;
+      long delta = pos - file->fp.size();
+
+      // if record to write is beyond the end of file...
+      if ( delta > 0 ) {
+        memset( buffer, 0, sizeof(buffer) );
+        file->fp.seek( file->fp.size() );
+        while ( delta > 0 ) {
+          // we need to add 'delta' 0 bytes to file.
+          i = ( delta > pab.buflen ) ? pab.buflen : delta;
+          written = file->fp.write( buffer, i );
+          delta -= written;
+        }
+      } else if ( delta < 0 ) {
+        file->fp.seek( pos ); // position to start of record we want to write.
+      }
+    }
+  }
+#endif
+  
   while (len && rc == HEXERR_SUCCESS && res == FR_OK ) {
     i = (len >= sizeof(buffer) ? sizeof(buffer) : len);
     rc = hex_get_data(buffer, i);
@@ -309,7 +337,7 @@ static uint8_t hex_drv_write(pab_t pab) {
     return HEXERR_BAV;
   }
 
-  if (file != NULL && (file->attr & FILEATTR_DISPLAY)) { // add CRLF to data
+  if (file != NULL && (file->attr & FILEATTR_DISPLAY) && !(file->attr & FILEATTR_RELATIVE) ) { // add CRLF to data if sequential file type in display format.
     buffer[0] = 13;
     buffer[1] = 10;
 #ifdef ARDUINO
@@ -326,6 +354,12 @@ static uint8_t hex_drv_write(pab_t pab) {
     switch (res) {
       case FR_OK:
         rc = HEXSTAT_SUCCESS;
+#ifdef ARDUINO
+        // For a relative file, ensure data is written to the card.
+        if ( file->attr & FILEATTR_RELATIVE ) {
+          file->fp.flush();
+        }
+#endif
         break;
       default:
         rc = HEXSTAT_DEVICE_ERR;
@@ -363,6 +397,20 @@ static uint8_t hex_drv_read(pab_t pab) {
   file = find_lun(pab.lun);
 
   if (file != NULL) {
+#ifdef ARDUINO
+    if ( file->attr & FILEATTR_RELATIVE ) {
+      {
+        unsigned long pos = pab.record * pab.buflen;
+
+        if ( pos > file->fp.size() ) {
+          file->fp.seek( file->fp.size() );
+        } else {
+          file->fp.seek( pos );
+        }
+      }
+    }
+#endif
+     
     if ( !(file->attr & FILEATTR_CATALOG ) ) {
 #ifdef ARDUINO
       // amount remaining to read from file
@@ -581,6 +629,10 @@ static uint8_t hex_drv_open(pab_t pab) {
             buffer[ pab.datalen - 1 ] = '/';
             file->attr |= FILEATTR_CATALOG;
           }
+        }
+
+        if ( att & OPENMODE_RELATIVE ) {
+          file->attr |= FILEATTR_RELATIVE;
         }
 
 #ifdef ARDUINO
