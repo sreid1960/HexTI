@@ -52,10 +52,10 @@ uint8_t device_address[ MAX_REGISTRY ] = {
   DEFAULT_PRINTER, // periph 1
   DEFAULT_SERIAL,  // periph 2
   DEFAULT_CLOCK,   // periph 3
-  NO_DEV,          // periph 4
+  DEFAULT_CFGDEV,  // periph 4
   NO_DEV,          // periph 5
   NO_DEV,          // periph 6
-  DEFAULT_CFGDEV,  // periph 7
+  NO_DEV,         // periph 7
 };
 
 static const uint8_t config_option[ MAX_REGISTRY - 1 ] PROGMEM = {
@@ -72,22 +72,24 @@ static const uint8_t supported_groups PROGMEM = {
   // additional group functions may be added later for periph 4, 5, and 6.  Periph 7 is reserved for cfg.
 };
 
-static const uint8_t low_device_address[ MAX_REGISTRY - 1 ] PROGMEM = {
+static const uint8_t low_device_address[ MAX_REGISTRY ] PROGMEM = {
+  0,
   DRV_DEV,
   PRN_DEV,
   SER_DEV,
   RTC_DEV,
-  0,
+  DEFAULT_CFGDEV,
   0,
   0
 };
 
-static const uint8_t high_device_address[ MAX_REGISTRY - 1 ] PROGMEM = {
+static const uint8_t high_device_address[ MAX_REGISTRY ] PROGMEM = {
+  255,
   MAX_DRV,
   MAX_PRN,
   MAX_SER,
   MAX_RTC,
-  0,
+  DEFAULT_CFGDEV,
   0,
   0
 };
@@ -108,8 +110,13 @@ static inline uint8_t our_support_mask(void) {
   return (uint8_t)pgm_read_byte( &supported_groups );
 }
 
+uint8_t cfg_low_address( uint8_t group ) {
+  return (uint8_t)pgm_read_byte( &low_device_address[ group ] );
+}
 
-
+uint8_t cfg_high_address( uint8_t group ) {
+  return (uint8_t)pgm_read_byte( &high_device_address[ group ] );
+}
 
 /*
    hex_cfg_open() -
@@ -355,8 +362,8 @@ static uint8_t hex_cfg_write( pab_t pab ) {
         ch = our_support_mask() & change_mask; // check to ensure that we are not trying to set address on unsupported periperhals
         if ( ch == change_mask ) {
           if ( (1 << pab.record) & change_mask ) {
-            if ( addr >= (uint8_t)pgm_read_byte( &low_device_address[ pab.record ] ) &&
-                 addr <= (uint8_t)pgm_read_byte( &high_device_address[ pab.record ] ) )
+            if ( addr >= (uint8_t)pgm_read_byte( &low_device_address[ pab.record+1 ] ) &&
+                 addr <= (uint8_t)pgm_read_byte( &high_device_address[ pab.record+1 ] ) )
             {
               device_address[ pab.record ] = addr; // this will be a structure that will be updated to EEPROM at some point.
               rc = HEXSTAT_SUCCESS;
@@ -486,8 +493,6 @@ void cfg_register(registry_t *registry) {
   uint8_t i = registry->num_devices;
 
   registry->num_devices++;
-  registry->entry[ i ].device_code_start = CFG_DEV;
-  registry->entry[ i ].device_code_end = CFG_DEV;
   registry->entry[ i ].operation = (cmd_proc *)&fn_table;
   registry->entry[ i ].command = (uint8_t *)&op_table;
   return;

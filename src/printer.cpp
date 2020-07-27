@@ -219,8 +219,6 @@ void prn_register(registry_t *registry) {
   uint8_t i = registry->num_devices;
   
   registry->num_devices++;
-  registry->entry[ i ].device_code_start = PRN_DEV;
-  registry->entry[ i ].device_code_end = PRN_DEV+9; // support 10 thru 19 as device codes.
   registry->entry[ i ].operation = (cmd_proc *)&fn_table;
   registry->entry[ i ].command = (uint8_t *)&op_table;
   return;

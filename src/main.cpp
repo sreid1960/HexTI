@@ -69,7 +69,7 @@ static uint8_t hex_reset_bus(pab_t pab) {
   debug_putc('R');
 
   // We ONLY do all devices if the command is directed to device 0.
-  if ( pab.dev == 0 ) {
+  if ( pab.dev == ALL_DEV ) {
     drv_reset();
     prn_reset();
     ser_reset();
@@ -104,15 +104,16 @@ static void execute_command(pab_t pab)
   // device code within the PAB IS found to be in our registry.  
   // If it is found, then we'll use the "unsupported" command 
   // default handler.
-  if ( pab.dev != 0 ) {
+  if ( pab.dev != ALL_DEV ) {
     i++;
   }
   
   while ( i < registry.num_devices ) {
     // does the incoming PAB have a device in this group in the registry?
-    if ( ( registry.entry[ i ].device_code_start <= pab.dev ) && 
-         ( registry.entry[ i ].device_code_end >= pab.dev ) )
+    if ( ( cfg_low_address( i ) <= pab.dev ) && 
+         ( cfg_high_address( i ) >= pab.dev ) )
     {
+      
       // If so...
       // this entry will handle our device code. 
       // Search for a matching command index now.
@@ -169,17 +170,17 @@ static const uint8_t op_table[] PROGMEM = {
 void setup_registry(void)
 {
   registry.num_devices = 1;
-  registry.entry[ 0 ].device_code_start = ALL_DEV;
-  registry.entry[ 0 ].device_code_end = MAX_DEV;
-  registry.entry[ 0 ].operation = (cmd_proc *)&fn_table;
+  // Registry Entry #0 is always for device 0.
+  registry.entry[ 0 ].operation = (cmd_proc *)&fn_table; // This entry is for ALL DEVICES @ devicecode=0
   registry.entry[ 0 ].command = (uint8_t *)&op_table;
 
-  // Register any configured peripherals.  if the peripheral type is not included, the call is to an empty routine.
-  cfg_register(&registry);
-  drv_register(&registry);
-  prn_register(&registry);
-  ser_register(&registry);
-  rtc_register(&registry);
+  // Register any configured peripherals.
+  drv_register(&registry);  // 1 : must be drive group
+  prn_register(&registry);  // 2 : must be printer group
+  ser_register(&registry);  // 3 : must be serial group
+  rtc_register(&registry);  // 4 : must be RTC group
+  // If we add others, we can insert them in here as long as CFG_GROUP is changed in configure.h...
+  cfg_register(&registry);  // 5
   return;
 }
 

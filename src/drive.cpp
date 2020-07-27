@@ -283,6 +283,34 @@ static uint8_t hex_drv_write(pab_t pab) {
   len = pab.datalen;
   res = (file != NULL ? FR_OK : FR_NO_FILE);
 
+#ifdef ARDUINO
+  // Handle relative file writes.
+  if ( file->attr & FILEATTR_RELATIVE ) {
+    // Use pab.record field and pab.bufsize to determine where to position for write;
+    // first, compute to see if desired record is beyond end of file. If so, we need to
+    // pad the file to that position, THEN write.
+    // if desired record is BEFORE our current position, set file position to that location.
+    {
+      long pos = pab.record * pab.buflen;
+      long delta = pos - file->fp.size();
+
+      // if record to write is beyond the end of file...
+      if ( delta > 0 ) {
+        memset( buffer, 0, sizeof(buffer) );
+        file->fp.seek( file->fp.size() );
+        while ( delta > 0 ) {
+          // we need to add 'delta' 0 bytes to file.
+          i = ( delta > pab.buflen ) ? pab.buflen : delta;
+          written = file->fp.write( buffer, i );
+          delta -= written;
+        }
+      } else if ( delta < 0 ) {
+        file->fp.seek( pos ); // position to start of record we want to write.
+      }
+    }
+  }
+#endif
+
   while (len && rc == HEXERR_SUCCESS && res == FR_OK ) {
     i = (len >= sizeof(buffer) ? sizeof(buffer) : len);
     rc = hex_get_data(buffer, i);
@@ -309,7 +337,7 @@ static uint8_t hex_drv_write(pab_t pab) {
     return HEXERR_BAV;
   }
 
-  if (file != NULL && (file->attr & FILEATTR_DISPLAY)) { // add CRLF to data
+  if (file != NULL && (file->attr & FILEATTR_DISPLAY) && !(file->attr & FILEATTR_RELATIVE) ) { // add CRLF to data if sequential file type in display format.
     buffer[0] = 13;
     buffer[1] = 10;
 #ifdef ARDUINO
@@ -326,6 +354,12 @@ static uint8_t hex_drv_write(pab_t pab) {
     switch (res) {
       case FR_OK:
         rc = HEXSTAT_SUCCESS;
+#ifdef ARDUINO
+        // For a relative file, ensure data is written to the card.
+        if ( file->attr & FILEATTR_RELATIVE ) {
+          file->fp.flush();
+        }
+#endif
         break;
       default:
         rc = HEXSTAT_DEVICE_ERR;
@@ -343,6 +377,29 @@ static uint8_t hex_drv_write(pab_t pab) {
   return HEXERR_SUCCESS;
 }
 
+// return offset in buffer of first CR/LF pair, inlen returned if none.
+static uint16_t CRLF_offset( char *buffer, uint16_t inlen, uint8_t *adj )
+{
+  uint16_t i = 0;
+
+  *adj = 0;
+  while ( i < inlen )
+  {
+    if ( buffer[ i ] == 13 )
+    {
+      i++;
+      *adj = 1;
+      if ( buffer[ i ] == 10 )
+      {
+        i++;
+        *adj = 2;
+      }
+      return i;
+    }
+    i++;
+  }
+  return inlen; // none found
+}
 
 /*
    hex_drv_read() -
@@ -350,19 +407,35 @@ static uint8_t hex_drv_write(pab_t pab) {
    in the PAB.
 */
 static uint8_t hex_drv_read(pab_t pab) {
-  uint8_t rc;
-  uint8_t i;
+  file_t* file;
+  unsigned long pos;
   uint16_t len = 0;
   uint16_t fsize;
   UINT read;
+  uint8_t rc = HEXSTAT_SUCCESS;
+  uint8_t i;
+  uint8_t first = 0;
   BYTE res = FR_OK;
-  file_t* file;
 
   debug_puts_P(PSTR("\n\rRead File\n\r"));
 
   file = find_lun(pab.lun);
 
   if (file != NULL) {
+#ifdef ARDUINO
+    if ( file->attr & FILEATTR_RELATIVE ) {
+      {
+        unsigned long pos = pab.record * pab.buflen;
+
+        if ( pos > file->fp.size() ) {
+          file->fp.seek( file->fp.size() );
+        } else {
+          file->fp.seek( pos );
+        }
+      }
+    }
+#endif
+
     if ( !(file->attr & FILEATTR_CATALOG ) ) {
 #ifdef ARDUINO
       // amount remaining to read from file
@@ -421,8 +494,12 @@ static uint8_t hex_drv_read(pab_t pab) {
 #endif
     }
 
-    // send how much we are going to send
-    rc = transmit_word( fsize );
+    if ( file->attr & FILEATTR_RELATIVE )
+    {
+      // send how much we are going to send
+      rc = transmit_word( fsize );
+      first = 1;
+    }
 
     // while we have data remaining to send.
     while ( fsize && rc == HEXERR_SUCCESS ) {
@@ -438,6 +515,21 @@ static uint8_t hex_drv_read(pab_t pab) {
         read = file->fp.read( (char *)buffer, len );
         if ( read ) {
           res = FR_OK;
+          if ( file->attr & FILEATTR_DISPLAY )
+          {
+            len = read;
+            len = CRLF_offset((char *)buffer, len, &i);
+            if ( len != read ) // did we find a CR/LF that isn't at the end of the read data?
+            {
+              pos = file->fp.position();
+              // need to seek back a bit possibly.
+              pos -= ( read - len ); // back up to character after the CR/LF
+              file->fp.seek( pos );
+            }
+            len -= i; // adjust length of data to return to drop the CR, or CR/LF if present.
+            read = len;
+            fsize = len; // finish.
+          }
         } else {
           res = FR_RW_ERROR;
         }
@@ -452,9 +544,18 @@ static uint8_t hex_drv_read(pab_t pab) {
         }
 
 #endif
+        if ( !first )
+        {
+          // send how much we are going to send
+          rc = transmit_word( read );
+          first = 1;
+        }
       } else {
         // catalog entry, if that's what we're reading, is already in buffer.
         read = fsize; // 0 if no entry, else size of entry in buffer.
+        // send how much we are going to send
+        rc = transmit_word( fsize );
+        first = 1;
       }
 
       if (FR_OK == res) {
@@ -583,6 +684,10 @@ static uint8_t hex_drv_open(pab_t pab) {
           }
         }
 
+        if ( att & OPENMODE_RELATIVE ) {
+          file->attr |= FILEATTR_RELATIVE;
+        }
+
 #ifdef ARDUINO
 
         if ( (att & OPENMODE_UPDATE) == OPENMODE_WRITE ) {
@@ -618,7 +723,7 @@ static uint8_t hex_drv_open(pab_t pab) {
           if ( pab.datalen < BUFSIZE - 1 ) {
             res = f_open(&fs, &(file->fp), (UCHAR *)&buffer[3], mode);
           }
-          if(res == FR_OK && (att & OPENMODE_MASK) == OPENMODE_APPEND ) {
+          if (res == FR_OK && (att & OPENMODE_MASK) == OPENMODE_APPEND ) {
             res = f_lseek( &(file->fp), file->fp.fsize ); // position for append.
           }
         }
@@ -677,10 +782,9 @@ static uint8_t hex_drv_open(pab_t pab) {
     if ( rc == HEXERR_SUCCESS ) {
       switch (att & OPENMODE_UPDATE) {
 
-        // when opening to write, or read/write
+        // when opening to write, or read/write or append...
         default:
-
-          if (!(( att & OPENMODE_INTERNAL) || (pab.lun != 0))) { // if NOT open mode = INTERNAL, let's add CR/LF to end of line (display form).
+          if (!( att & OPENMODE_INTERNAL) || (pab.lun != 0)) { // if NOT open mode = INTERNAL, let's add CR/LF to end of line (display form).
             file->attr |= FILEATTR_DISPLAY;
           }
           // if we don't know how big its going to be... we may need multiple writes.
@@ -701,6 +805,10 @@ static uint8_t hex_drv_open(pab_t pab) {
               fsize = len; // non zero length requested, use it.
             } else {
               fsize = sizeof(buffer);  // on zero length request, return buffer size we use.
+            }
+            if ( !( att & OPENMODE_INTERNAL) )
+            {
+              file->attr |= FILEATTR_DISPLAY;
             }
           }
           // for len=0 OR lun=0, return fsize.
@@ -1027,8 +1135,6 @@ void drv_register(registry_t *registry)
   uint8_t i = registry->num_devices;
 
   registry->num_devices++;
-  registry->entry[ i ].device_code_start = DRV_DEV;
-  registry->entry[ i ].device_code_end = MAX_DRV; // support 100-109 for disks
   registry->entry[ i ].operation = (cmd_proc *)&fn_table;
   registry->entry[ i ].command = (uint8_t *)&op_table;
   return;
